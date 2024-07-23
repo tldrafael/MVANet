@@ -47,7 +47,7 @@ def patches2image(x):
 
 
 class PositionEmbeddingSine:
-    def __init__(self, num_pos_feats=64, temperature=10000, normalize=False, scale=None):
+    def __init__(self, num_pos_feats=64, temperature=10000, normalize=False, scale=None, gpu_id=0):
         super().__init__()
         self.num_pos_feats = num_pos_feats
         self.temperature = temperature
@@ -57,18 +57,19 @@ class PositionEmbeddingSine:
         if scale is None:
             scale = 2 * math.pi
         self.scale = scale
-        self.dim_t = torch.arange(0, self.num_pos_feats, dtype=torch.float32, device='cuda') 
+        self.dim_t = torch.arange(0, self.num_pos_feats, dtype=torch.float32).to(gpu_id)
+        self.gpu_id = gpu_id
 
     def __call__(self, b, h, w):
-        mask = torch.zeros([b, h, w], dtype=torch.bool, device='cuda')
+        mask = torch.zeros([b, h, w], dtype=torch.bool).to(self.gpu_id)
         assert mask is not None
         not_mask = ~mask
         y_embed = not_mask.cumsum(dim=1, dtype=torch.float32)  
         x_embed = not_mask.cumsum(dim=2, dtype=torch.float32)  
         if self.normalize:
             eps = 1e-6
-            y_embed = ((y_embed - 0.5) / (y_embed[:, -1:, :] + eps) * self.scale).cuda()
-            x_embed = ((x_embed - 0.5) / (x_embed[:, :, -1:] + eps) * self.scale).cuda()
+            y_embed = ((y_embed - 0.5) / (y_embed[:, -1:, :] + eps) * self.scale)
+            x_embed = ((x_embed - 0.5) / (x_embed[:, :, -1:] + eps) * self.scale)
 
         dim_t = self.temperature ** (2 * (self.dim_t // 2) / self.num_pos_feats) 
 
@@ -82,7 +83,7 @@ class PositionEmbeddingSine:
 
 
 class MCLM(nn.Module):  
-    def __init__(self, d_model, num_heads, pool_ratios=[1, 4, 8]):
+    def __init__(self, d_model, num_heads, pool_ratios=[1, 4, 8], gpu_id=0):
         super(MCLM, self).__init__()
         self.attention = nn.ModuleList([
             nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
@@ -105,7 +106,7 @@ class MCLM(nn.Module):
         self.pool_ratios = pool_ratios
         self.p_poses = []
         self.g_pos = None
-        self.positional_encoding = PositionEmbeddingSine(num_pos_feats=d_model // 2, normalize=True)
+        self.positional_encoding = PositionEmbeddingSine(num_pos_feats=d_model // 2, normalize=True, gpu_id=gpu_id)
 
     def forward(self, l, g):
         """
@@ -158,7 +159,7 @@ class MCLM(nn.Module):
 
 
 class inf_MCLM(nn.Module):  
-    def __init__(self, d_model, num_heads, pool_ratios=[1, 4, 8]):
+    def __init__(self, d_model, num_heads, pool_ratios=[1, 4, 8], gpu_id=0):
         super(inf_MCLM, self).__init__()
         self.attention = nn.ModuleList([
             nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
@@ -181,7 +182,7 @@ class inf_MCLM(nn.Module):
         self.pool_ratios = pool_ratios
         self.p_poses = []
         self.g_pos = None
-        self.positional_encoding = PositionEmbeddingSine(num_pos_feats=d_model // 2, normalize=True)
+        self.positional_encoding = PositionEmbeddingSine(num_pos_feats=d_model // 2, normalize=True, gpu_id=gpu_id)
 
     def forward(self, l, g):
         """
@@ -254,7 +255,7 @@ class MCRM(nn.Module):
         self.activation = get_activation_fn('relu')
         self.sal_conv = nn.Conv2d(d_model, 1, 1)
         self.pool_ratios = pool_ratios
-        self.positional_encoding = PositionEmbeddingSine(num_pos_feats=d_model // 2, normalize=True)
+
     def forward(self, x):
         b, c, h, w = x.size()  
         loc, glb = x.split([4, 1], dim=0)  # 4,c,h,w; 1,c,h,w
@@ -311,7 +312,7 @@ class inf_MCRM(nn.Module):
         self.activation = get_activation_fn('relu')
         self.sal_conv = nn.Conv2d(d_model, 1, 1)
         self.pool_ratios = pool_ratios
-        self.positional_encoding = PositionEmbeddingSine(num_pos_feats=d_model // 2, normalize=True)
+
     def forward(self, x):
         b, c, h, w = x.size()  
         loc, glb = x.split([4, 1], dim=0)  # 4,c,h,w; 1,c,h,w
@@ -348,7 +349,7 @@ class inf_MCRM(nn.Module):
 
 # model for single-scale training
 class MVANet(nn.Module):  
-    def __init__(self):
+    def __init__(self, gpu_id=0):
         super().__init__()
         self.backbone = SwinB(pretrained=True)
         emb_dim = 128
@@ -364,7 +365,8 @@ class MVANet(nn.Module):
         self.output2 = make_cbr(128, emb_dim)
         self.output1 = make_cbr(128, emb_dim)
 
-        self.multifieldcrossatt = MCLM(emb_dim, 1, [1, 4, 8])
+        self.gpu_id = gpu_id
+        self.multifieldcrossatt = MCLM(emb_dim, 1, [1, 4, 8], gpu_id=gpu_id)
         self.conv1 = make_cbr(emb_dim, emb_dim)
         self.conv2 = make_cbr(emb_dim, emb_dim)
         self.conv3 = make_cbr(emb_dim, emb_dim)
@@ -428,7 +430,7 @@ class MVANet(nn.Module):
         final_output = self.upsample2(final_output)
         final_output = self.output(final_output)
         ####
-        sideout5 = self.sideout5(e5).cuda()
+        sideout5 = self.sideout5(e5).to(self.gpu_id)
         sideout4 = self.sideout4(e4) 
         sideout3 = self.sideout3(e3) 
         sideout2 = self.sideout2(e2) 
@@ -440,11 +442,11 @@ class MVANet(nn.Module):
         glb2 = sideout2[-1,:,:,:].unsqueeze(0)
         glb1 = sideout1[-1,:,:,:].unsqueeze(0)
         ####### concat 4 to 1 #######
-        sideout1 = patches2image(sideout1[:-1]).cuda()
-        sideout2 = patches2image(sideout2[:-1]).cuda()####(5,c,h,w) -> (1 c 2h,2w)
-        sideout3 = patches2image(sideout3[:-1]).cuda()
-        sideout4 = patches2image(sideout4[:-1]).cuda()
-        sideout5 = patches2image(sideout5[:-1]).cuda()
+        sideout1 = patches2image(sideout1[:-1]).to(self.gpu_id)
+        sideout2 = patches2image(sideout2[:-1]).to(self.gpu_id)
+        sideout3 = patches2image(sideout3[:-1]).to(self.gpu_id)
+        sideout4 = patches2image(sideout4[:-1]).to(self.gpu_id)
+        sideout5 = patches2image(sideout5[:-1]).to(self.gpu_id)
         if self.training:
             return sideout5, sideout4,sideout3,sideout2,sideout1,final_output, glb5, glb4, glb3, glb2, glb1,tokenattmap4, tokenattmap3,tokenattmap2,tokenattmap1
         else:
@@ -452,7 +454,7 @@ class MVANet(nn.Module):
     
 # model for multi-scale testing
 class inf_MVANet(nn.Module):  
-    def __init__(self):
+    def __init__(self, gpu_id=0):
         super().__init__()
         self.backbone = SwinB(pretrained=True)
 
@@ -463,7 +465,7 @@ class inf_MVANet(nn.Module):
         self.output2 = make_cbr(128, emb_dim)
         self.output1 = make_cbr(128, emb_dim)
 
-        self.multifieldcrossatt = inf_MCLM(emb_dim, 1, [1, 4, 8])
+        self.multifieldcrossatt = inf_MCLM(emb_dim, 1, [1, 4, 8], gpu_id=gpu_id)
         self.conv1 = make_cbr(emb_dim, emb_dim)
         self.conv2 = make_cbr(emb_dim, emb_dim)
         self.conv3 = make_cbr(emb_dim, emb_dim)

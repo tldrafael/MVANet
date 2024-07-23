@@ -5,6 +5,7 @@ import torchvision.transforms as transforms
 import random
 import numpy as np
 from PIL import ImageEnhance
+from torch.utils.data.distributed import DistributedSampler
 
 
 # several data augumentation strategies
@@ -94,11 +95,21 @@ def randomPeper(img):
 class DISDataset(data.Dataset):
     def __init__(self, image_root, gt_root, trainsize):
         self.trainsize = trainsize
-        self.images = [image_root + f for f in os.listdir(image_root) if f.endswith('.jpg') or f.endswith('tif')]
-        self.gts = [gt_root + f for f in os.listdir(gt_root) if f.endswith('.jpg')
-                    or f.endswith('.png') or f.endswith('tif')]
-        self.images = sorted(self.images)
-        self.gts = sorted(self.gts)
+        #self.images = [image_root + f for f in os.listdir(image_root) if f.endswith('.jpg') or f.endswith('tif')]
+        #self.gts = [gt_root + f for f in os.listdir(gt_root) if f.endswith('.jpg')
+        #            or f.endswith('.png') or f.endswith('tif')]
+        #self.images = sorted(self.images)
+        #self.gts = sorted(self.gts)
+
+        fpath = '/home/rafael/datasets/trainlists/2024_0711_goodboundaries_tunelist_long1024.txt'
+        # fpath = '/home/rafael/datasets/trainlists/2024_0626_goodboundaries_uniqpaths_long1024_reduceLogos.txt'
+        with open(fpath, 'r') as f:
+            self.images = f.read().split('\n')
+            if len(self.images[-1]) == 0:
+                self.images.pop(-1)
+        self.images = np.random.permutation(self.images)
+        self.gts = [p.replace('/im/', '/gt/').replace('.jpg', '.png') for p in self.images]
+
         self.filter_files()
         self.size = len(self.images)
         self.img_transform = transforms.Compose([
@@ -164,9 +175,10 @@ def get_loader(image_root, gt_root, batchsize, trainsize, shuffle=True, num_work
     dataset = DISDataset(image_root, gt_root,  trainsize)
     data_loader = data.DataLoader(dataset=dataset,
                                   batch_size=batchsize,
-                                  shuffle=shuffle,
+                                  # shuffle=shuffle,
                                   num_workers=num_workers,
-                                  pin_memory=pin_memory)
+                                  sampler=DistributedSampler(dataset),
+                                  pin_memory=True)
     return data_loader
 
 

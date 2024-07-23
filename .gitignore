@@ -1,0 +1,5 @@
+*.swp
+runs/
+ckpts/
+*/__pycache__/
+tags

@@ -1,6 +1,7 @@
-import torch
 import  os, argparse
-os.environ["CUDA_VISIBLE_DEVICES"] ='0'
+os.environ["CUDA_VISIBLE_DEVICES"] ='3'
+from tqdm import tqdm
+import torch
 from datetime import datetime
 from model.MVANet import MVANet
 from utils.dataset_strategy_fpn import get_loader
@@ -46,9 +47,9 @@ to_pil = transforms.ToPILImage()
 
 CE = torch.nn.BCELoss()
 mse_loss = torch.nn.MSELoss(size_average=True, reduce=True)
-size_rates = [1]  
+size_rates = [1]
 criterion = nn.BCEWithLogitsLoss().cuda()
-criterion_mae = nn.L1Loss().cuda() 
+criterion_mae = nn.L1Loss().cuda()
 criterion_mse = nn.MSELoss().cuda()
 use_fp16 = True
 scaler = amp.GradScaler(enabled=use_fp16)
@@ -74,7 +75,10 @@ for epoch in range(1, opt.epoch+1):
     generator.train()
     loss_record = AvgMeter()
     print('Generator Learning Rate: {}'.format(generator_optimizer.param_groups[0]['lr']))
-    for i, pack in enumerate(train_loader, start=1):
+    i = 1
+    # for i, pack in enumerate(train_loader, start=1):
+    pbar = tqdm(train_loader)
+    for pack in pbar:
         torch.cuda.empty_cache()
         for rate in size_rates:
             torch.cuda.empty_cache()
@@ -98,7 +102,7 @@ for epoch in range(1, opt.epoch+1):
             target_5 = F.upsample(gts, size=h // 64, mode='nearest').cuda()
 
             with amp.autocast(enabled=use_fp16):
-                sideout5, sideout4, sideout3, sideout2, sideout1, final, glb5, glb4, glb3, glb2, glb1, tokenattmap4, tokenattmap3,tokenattmap2,tokenattmap1= generator.forward(images)
+                sideout5, sideout4, sideout3, sideout2, sideout1, final, glb5, glb4, glb3, glb2, glb1, tokenattmap4, tokenattmap3, tokenattmap2, tokenattmap1 = generator.forward(images)
                 loss1 = structure_loss(sideout5, target_4)
                 loss2 = structure_loss(sideout4, target_3)
                 loss3 = structure_loss(sideout3, target_2)
@@ -129,16 +133,17 @@ for epoch in range(1, opt.epoch+1):
                 loss_record.update(loss.data, opt.batchsize)
 
 
+        i += 1
         if i % 10 == 0 or i == total_step:
-            print('{} Epoch [{:03d}/{:03d}], Step [{:04d}/{:04d}], gen Loss: {:.4f}'.
-                  format(datetime.now(), epoch, opt.epoch, i, total_step, loss_record.show()))
+            pbar.set_description('Epoch: [{}/{}] Loss: {:.4f}'.format(epoch, opt.epoch, loss_record.show()))
+            #print('{} Epoch [{:03d}/{:03d}], Step [{:04d}/{:04d}], gen Loss: {:.4f}'.
+            #      format(datetime.now(), epoch, opt.epoch, i, total_step, loss_record.show()))
 
     adjust_lr(generator_optimizer, opt.lr_gen, epoch, opt.decay_rate, opt.decay_epoch)
     # save checkpoints every 20 epochs
-    if epoch % 20== 0 :
+    # if epoch % 20== 0 :
+    if True:
         save_path = './saved_model/MVANet/'
         if not os.path.exists(save_path):
             os.mkdir(save_path)
         torch.save(generator.state_dict(), save_path + 'Model' + '_%d' % epoch + '.pth')
-
-
