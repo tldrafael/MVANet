@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import  os, argparse
 from tqdm import tqdm
 import torch
@@ -36,7 +37,9 @@ T_mva = T.Compose([
 ])
 
 
+@torch.no_grad()
 def predict(p, generator, input_size=1024):
+    generator.eval()
     im = cv2_imread(p)
     oldh, oldw = im.shape[:2]
     newim, (padh, padw) = ds.resize_im(
@@ -57,7 +60,7 @@ def predict(p, generator, input_size=1024):
 def evaluate_evalset_by_cat(generator):
     dfcat = pd.read_csv("/home/rafael/datasets/evalsets/evalset-multicat-v0.2-long2048/dfcat-for-training.csv")
     dfcat['sad'] = np.nan
-    dfcat = dfcat.sample(10)
+    # dfcat = dfcat.sample(10)
 
     for i, r in tqdm(dfcat.iterrows()):
         gtpath = get_gtpath(r.path)
@@ -87,17 +90,20 @@ def structure_loss(pred, mask):
     return (wbce+wiou).mean()
 
 
-from types import SimpleNamespace
-opt = SimpleNamespace()
-opt.epoch = 80
-opt.lr_gen = 1e-5
-opt.batchsize = 1
-opt.trainsize = 1024
-opt.decay_rate = 0.9
-opt.decay_epoch = 80
-
-
 def train():
+    opt = SimpleNamespace()
+    opt.epoch = 80
+    opt.lr_gen = 1e-5
+    opt.batchsize = 1
+    opt.trainsize = 1024
+    opt.decay_rate = 0.9
+    opt.decay_epoch = 80
+    runname = 'tuning1'
+
+    resume = True
+    ckpt_dir = 'runs/20240724_1041+tuning1/'
+    epoch_start = 21
+
     n_gpus = torch.cuda.device_count()
     rank = dist.get_rank()
     gpu_id = rank % n_gpus
@@ -105,7 +111,8 @@ def train():
 
     if gpu_id == 0:
         time_now = datetime.now().strftime("%Y%m%d_%H%M")
-        ckpt_dir = f'runs/{time_now}+test1'
+        if not resume:
+            ckpt_dir = f'runs/{time_now}+{runname}'
         os.makedirs(ckpt_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=ckpt_dir)
 
@@ -118,6 +125,9 @@ def train():
     generator = MVANet(gpu_id=gpu_id)
     generator.to(gpu_id)
     generator = DDP(generator, device_ids=[gpu_id])
+    if resume:
+        state = torch.load(os.path.join(ckpt_dir, f'Model_{epoch_start-1}.pth'))
+        generator.load_state_dict(state)
 
     generator_params = generator.parameters()
     generator_optimizer = torch.optim.Adam(generator_params, opt.lr_gen)
@@ -137,7 +147,11 @@ def train():
     use_fp16 = True
     scaler = amp.GradScaler(enabled=use_fp16)
 
-    for epoch in range(1, opt.epoch+1):
+    if gpu_id == 0:
+        sadlog = evaluate_evalset_by_cat(generator)
+        print(f'Epoch: {epoch_start-1}, sadlog: {sadlog:.2f}')
+
+    for epoch in range(epoch_start, opt.epoch+1):
         torch.cuda.empty_cache()
         generator.train()
         i = 1
@@ -194,18 +208,16 @@ def train():
 
             i += 1
             if i % 10 == 0 or i == total_step and gpu_id == 0:
+                # break
                 pbar.set_description('Epoch: [{}/{}] Loss: {:.4f}'.format(epoch, opt.epoch, losses[-1]))
 
-            if i % 10 == 0:
-                break
+            if i % 50 == 0:
                 torch.cuda.empty_cache()
 
         # adjust_lr(generator_optimizer, opt.lr_gen, epoch, opt.decay_rate, opt.decay_epoch)
         if gpu_id == 0:
-            with torch.no_grad():
-                generator.eval()
-                sadlog = evaluate_evalset_by_cat(generator)
-                generator.train()
+            sadlog = evaluate_evalset_by_cat(generator)
+            generator.train()
 
             writer.add_scalar('train_loss', np.mean(losses), epoch)
             writer.add_scalar('sadlog', sadlog, epoch)
